@@ -1,0 +1,355 @@
+diff --git a/src/Core/ConfigDate.cpp b/src/Core/ConfigDate.cpp
+index e0607ae..fa5f45d 100644
+--- a/src/Core/ConfigDate.cpp
++++ b/src/Core/ConfigDate.cpp
+@@ -90,7 +90,7 @@ void ConfigDate::createDefaultConfigFile(const std::string& filePath, const std:
+ 
+ std::string ConfigDate::defaultConfig()
+ {
+-    const static char* defaultConfig = R"({"auto_exit": false,"auto_login":false,"auto_start": false,"account":[],"last_account":0,"num":0})";
++    const static char* defaultConfig = R"({"auto_exit": false,"auto_login":false,"auto_start": false,"scan_only":false,"account":[],"last_account":0,"num":0})";
+     m_config = defaultConfig;
+     createDefaultConfigFile(ConfigFilePath, defaultConfig);
+     return defaultConfig;
+diff --git a/src/Core/ScannerBase.hpp b/src/Core/ScannerBase.hpp
+index 5477b27..5a5ebf0 100644
+--- a/src/Core/ScannerBase.hpp
++++ b/src/Core/ScannerBase.hpp
+@@ -1,5 +1,6 @@
+ ﻿#pragma once
+ 
++#include <atomic>
+ #include <string>
+ #include <string_view>
+ 
+@@ -14,6 +15,8 @@ public:
+     std::string lastTicket;
+     std::string uid;
+     std::string gameToken{};
++    // 只扫码不确认模式：扫码成功后跳过 confirm，不停止，直接监视下一个二维码
++    std::atomic<bool> scanOnly{ false };
+     std::map<std::string_view, std::function<void()>> setGameType{
+         { "8F3", [this]() {
+              gameType = GameType::Honkai3;
+diff --git a/src/UI/QRCodeForScreen.cpp b/src/UI/QRCodeForScreen.cpp
+index bd303c5..719b464 100644
+--- a/src/UI/QRCodeForScreen.cpp
++++ b/src/UI/QRCodeForScreen.cpp
+@@ -94,6 +94,13 @@ void QRCodeForScreen::LoginOfficial()
+                 if (ScanQRLogin(scanUrl.data(), ticket, gameType))
+                 {
+                     lastTicket = ticket;
++                    if (scanOnly.load())
++                    {
++                        // 只扫码不确认：不停止、不确认，直接监视下一个二维码
++                        emit scanOnlyHit(QString::fromStdString(std::string(ticket)));
++                        mtx.unlock();
++                        return;
++                    }
+                     nlohmann::json config = nlohmann::json::parse(m_config->getConfig());
+                     if (config["auto_login"])
+                     {
+@@ -106,6 +113,14 @@ void QRCodeForScreen::LoginOfficial()
+                 }
+                 else
+                 {
++                    if (scanOnly.load())
++                    {
++                        // 该码已失效/已被扫过：跳过并继续，避免每帧重复重试
++                        lastTicket = ticket;
++                        emit scanOnlyHit(QString());
++                        mtx.unlock();
++                        return;
++                    }
+                     emit loginResults(ScanRet::FAILURE_1);
+                 }
+                 stop();
+@@ -167,6 +182,13 @@ void QRCodeForScreen::LoginBH3BiliBili()
+                 if (ret = scanCheck(ticket); ret == ScanRet::SUCCESS)
+                 {
+                     lastTicket = ticket;
++                    if (scanOnly.load())
++                    {
++                        // 只扫码不确认：不停止、不确认，直接监视下一个二维码
++                        emit scanOnlyHit(QString::fromStdString(ticket));
++                        mtx.unlock();
++                        return;
++                    }
+                     nlohmann::json config = nlohmann::json::parse(m_config->getConfig());
+                     if (config["auto_login"])
+                     {
+@@ -179,6 +201,14 @@ void QRCodeForScreen::LoginBH3BiliBili()
+                 }
+                 else
+                 {
++                    if (scanOnly.load())
++                    {
++                        // 该码已失效/已被扫过：跳过并继续，避免每帧重复重试
++                        lastTicket = ticket;
++                        emit scanOnlyHit(QString());
++                        mtx.unlock();
++                        return;
++                    }
+                     emit loginResults(ScanRet::FAILURE_1);
+                 }
+                 stop();
+diff --git a/src/UI/QRCodeForScreen.h b/src/UI/QRCodeForScreen.h
+index 389e21a..ecc95d1 100644
+--- a/src/UI/QRCodeForScreen.h
++++ b/src/UI/QRCodeForScreen.h
+@@ -30,6 +30,8 @@ public:
+ signals:
+     void loginResults(const ScanRet ret);
+     void loginConfirm(const GameType gameType, bool b);
++    // 只扫码不确认模式下每次扫描动作的结果（空字符串表示本次扫码失败，继续监视）
++    void scanOnlyHit(const QString& ticket);
+ 
+ private:
+     ConfigDate* m_config;
+diff --git a/src/UI/QRCodeForStream.cpp b/src/UI/QRCodeForStream.cpp
+index c991b17..e92ad3f 100644
+--- a/src/UI/QRCodeForStream.cpp
++++ b/src/UI/QRCodeForStream.cpp
+@@ -110,6 +110,13 @@ void QRCodeForStream::LoginOfficial()
+                     if (ScanQRLogin(scanUrl.data(), ticket, gameType))
+                     {
+                         lastTicket = ticket;
++                        if (scanOnly.load())
++                        {
++                            // 只扫码不确认：不停止、不确认，直接监视下一个二维码
++                            emit scanOnlyHit(QString::fromStdString(std::string(ticket)));
++                            mtx.unlock();
++                            return;
++                        }
+                         nlohmann::json config = nlohmann::json::parse(m_config->getConfig());
+                         if (config["auto_login"])
+                         {
+@@ -122,6 +129,14 @@ void QRCodeForStream::LoginOfficial()
+                     }
+                     else
+                     {
++                        if (scanOnly.load())
++                        {
++                            // 该码已失效/已被扫过：跳过并继续，避免每帧重复重试
++                            lastTicket = ticket;
++                            emit scanOnlyHit(QString());
++                            mtx.unlock();
++                            return;
++                        }
+                         Q_EMIT loginResults(ScanRet::FAILURE_1);
+                     }
+                     stop();
+@@ -193,6 +208,13 @@ void QRCodeForStream::LoginBH3BiliBili()
+                     if (ret = scanCheck(ticket); ret == ScanRet::SUCCESS)
+                     {
+                         lastTicket = ticket;
++                        if (scanOnly.load())
++                        {
++                            // 只扫码不确认：不停止、不确认，直接监视下一个二维码
++                            emit scanOnlyHit(QString::fromStdString(ticket));
++                            mtx.unlock();
++                            return;
++                        }
+                         nlohmann::json config = nlohmann::json::parse(m_config->getConfig());
+                         if (config["auto_login"])
+                         {
+@@ -205,6 +227,14 @@ void QRCodeForStream::LoginBH3BiliBili()
+                     }
+                     else
+                     {
++                        if (scanOnly.load())
++                        {
++                            // 该码已失效/已被扫过：跳过并继续，避免每帧重复重试
++                            lastTicket = ticket;
++                            emit scanOnlyHit(QString());
++                            mtx.unlock();
++                            return;
++                        }
+                         Q_EMIT loginResults(ret);
+                     }
+                     stop();
+diff --git a/src/UI/QRCodeForStream.h b/src/UI/QRCodeForStream.h
+index a572410..86cde8d 100644
+--- a/src/UI/QRCodeForStream.h
++++ b/src/UI/QRCodeForStream.h
+@@ -44,6 +44,8 @@ public:
+ Q_SIGNALS:
+     void loginResults(const ScanRet ret);
+     void loginConfirm(const GameType gameType, bool b);
++    // 只扫码不确认模式下每次扫描动作的结果（空字符串表示本次扫码失败，继续监视）
++    void scanOnlyHit(const QString& ticket);
+ 
+ private:
+     std::mutex mtx;
+diff --git a/src/UI/WindowMain.cpp b/src/UI/WindowMain.cpp
+index e98ce14..557a2d6 100644
+--- a/src/UI/WindowMain.cpp
++++ b/src/UI/WindowMain.cpp
+@@ -56,12 +56,15 @@ WindowMain::WindowMain(QWidget* parent) :
+     connect(ui.checkBoxAutoScreen, &QCheckBox::clicked, this, &WindowMain::checkBoxAutoScreen);
+     connect(ui.checkBoxAutoExit, &QCheckBox::clicked, this, &WindowMain::checkBoxAutoExit);
+     connect(ui.checkBoxAutoLogin, &QCheckBox::clicked, this, &WindowMain::checkBoxAutoLogin);
++    connect(ui.pBtScanOnly, &QPushButton::clicked, this, &WindowMain::scanOnlyToggled);
+     connect(ui.pBtStream, &QPushButton::clicked, this, &WindowMain::pBtStream);
+     connect(ui.tableWidget, &QTableWidget::cellClicked, this, &WindowMain::getInfo);
+     connect(&t1, &QRCodeForScreen::loginResults, this, &WindowMain::islogin);
+     connect(&t1, &QRCodeForScreen::loginConfirm, this, &WindowMain::loginConfirmTip);
++    connect(&t1, &QRCodeForScreen::scanOnlyHit, this, &WindowMain::scanOnlyScanned);
+     connect(&t2, &QRCodeForStream::loginResults, this, &WindowMain::islogin);
+     connect(&t2, &QRCodeForStream::loginConfirm, this, &WindowMain::loginConfirmTip);
++    connect(&t2, &QRCodeForStream::scanOnlyHit, this, &WindowMain::scanOnlyScanned);
+     connect(&configinitload, &configInitLoad::userinfoTrue, this, &WindowMain::configInitUpdate);
+     connect(ui.tableWidget, &QTableWidget::itemChanged, this, &WindowMain::updateNote);
+ 
+@@ -450,6 +453,39 @@ void WindowMain::checkBoxAutoLogin(bool clicked)
+     m_config->updateConfig(userinfo.dump());
+ }
+ 
++void WindowMain::scanOnlyToggled(bool clicked)
++{
++    t1.scanOnly.store(clicked);
++    t2.scanOnly.store(clicked);
++    userinfo["scan_only"] = clicked;
++    m_config->updateConfig(userinfo.dump());
++    if (!clicked)
++    {
++        scanCount = 0;
++        ui.labelScanStatus->setText("未开始扫码");
++    }
++    else
++    {
++        ui.labelScanStatus->setText("只扫码不确认模式已开启，扫完自动监视下一个…");
++    }
++}
++
++void WindowMain::scanOnlyScanned(const QString& ticket)
++{
++    if (ticket.isEmpty())
++    {
++        ui.labelScanStatus->setText("当前二维码扫码失败，继续监视…");
++        return;
++    }
++    ++scanCount;
++    QString shortTicket = ticket;
++    if (shortTicket.size() > 12)
++    {
++        shortTicket = shortTicket.left(6) + "…" + shortTicket.right(6);
++    }
++    ui.labelScanStatus->setText(QString("已扫 %1 个，最新: %2").arg(scanCount).arg(shortTicket));
++}
++
+ void WindowMain::liveIdError(const LiveStreamStatus status)
+ {
+     switch (status)
+@@ -650,6 +686,13 @@ void WindowMain::configInitUpdate()
+         {
+             ui.checkBoxAutoLogin->setChecked(true);
+         }
++        if (userinfo.contains("scan_only") && userinfo["scan_only"].get<bool>())
++        {
++            ui.pBtScanOnly->setChecked(true);
++            t1.scanOnly.store(true);
++            t2.scanOnly.store(true);
++            ui.labelScanStatus->setText("只扫码不确认模式已开启，扫完自动监视下一个…");
++        }
+     }
+     catch (const std::exception& e)
+     {
+diff --git a/src/UI/WindowMain.h b/src/UI/WindowMain.h
+index c9c084f..5918db6 100644
+--- a/src/UI/WindowMain.h
++++ b/src/UI/WindowMain.h
+@@ -61,6 +61,8 @@ public Q_SLOTS:
+     void checkBoxAutoScreen(bool clicked);
+     void checkBoxAutoExit(bool clicked);
+     void checkBoxAutoLogin(bool clicked);
++    void scanOnlyToggled(bool clicked);
++    void scanOnlyScanned(const QString& ticket);
+ 
+     void islogin(const ScanRet ret);
+     void loginConfirmTip(const GameType gameType, bool b);
+@@ -78,6 +80,7 @@ Q_SIGNALS:
+ private:
+     void failure();
+     int countA = -1;
++    int scanCount = 0;
+     Ui::WindowMain ui;
+     ConfigDate* m_config = &ConfigDate::getInstance();
+     nlohmann::json userinfo;
+diff --git a/src/UI/WindowMain.ui b/src/UI/WindowMain.ui
+index d0a2b1a..335e6cc 100644
+--- a/src/UI/WindowMain.ui
++++ b/src/UI/WindowMain.ui
+@@ -94,7 +94,7 @@
+     <property name="geometry">
+      <rect>
+       <x>60</x>
+-      <y>500</y>
++      <y>520</y>
+       <width>71</width>
+       <height>16</height>
+      </rect>
+@@ -107,7 +107,7 @@
+     <property name="geometry">
+      <rect>
+       <x>110</x>
+-      <y>500</y>
++      <y>520</y>
+       <width>343</width>
+       <height>18</height>
+      </rect>
+@@ -306,6 +306,54 @@ QTableWidget::item:selected
+      </item>
+     </layout>
+    </widget>
++   <widget class="QWidget" name="horizontalLayoutWidget_3">
++    <property name="geometry">
++     <rect>
++      <x>0</x>
++      <y>483</y>
++      <width>501</width>
++      <height>24</height>
++     </rect>
++    </property>
++    <layout class="QHBoxLayout" name="horizontalLayout_4">
++     <property name="leftMargin">
++      <number>30</number>
++     </property>
++     <property name="rightMargin">
++      <number>30</number>
++     </property>
++     <item>
++      <widget class="QPushButton" name="pBtScanOnly">
++       <property name="text">
++        <string>只扫码不确认</string>
++       </property>
++       <property name="checkable">
++        <bool>true</bool>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <spacer name="horizontalSpacer_2">
++       <property name="orientation">
++        <enum>Qt::Horizontal</enum>
++       </property>
++       <property name="sizeHint" stdset="0">
++        <size>
++         <width>40</width>
++         <height>20</height>
++        </size>
++       </property>
++      </spacer>
++     </item>
++     <item>
++      <widget class="QLabel" name="labelScanStatus">
++       <property name="text">
++        <string>未开始扫码</string>
++       </property>
++      </widget>
++     </item>
++    </layout>
++   </widget>
+   </widget>
+   <widget class="QMenuBar" name="menuBar">
+    <property name="geometry">
